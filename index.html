@@ -94,115 +94,320 @@ const fmtTime = (ts) => {
 const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const titleCase = (s) => s.split(" ").map(capitalize).join(" ");
 
-/* ───────── VOICE COMMAND PARSER ───────── */
-function parseVoiceCommand(text) {
-  const t = text.toLowerCase().trim();
+/* ═══════════════════════════════════════════════════
+   SMART VOICE COMMAND PARSER — EN + FR
+   Token-based NLP with fuzzy matching
+   ═══════════════════════════════════════════════════ */
 
-  // Patterns to match:
-  // "[person] took from [person] [amount] [currency] (to [description])"
-  // "[person] paid [person] [amount] [currency] (for [description])"
-  // "[person] gave [person] [amount] [currency] (for [description])"
-  // "[person] owes [person] [amount] [currency] (for [description])"
-  // "[person] spent [amount] [currency] from [person] (for/to [description])"
+// ── Name dictionary with phonetic variants ──
+const NAME_VARIANTS = {
+  "Amine": ["amine", "amin", "ameen", "amene", "aminé", "amin e", "i mean", "a mean", "amino", "amina", "ah mean", "amine's"],
+  "Mehdi": ["mehdi", "mahdi", "medi", "mehdy", "meди", "medi", "mehdy", "madi", "med", "mehd", "madhi", "madie", "mehdi's", "mehdy's", "meh dee", "may dee"],
+  "Nelia": ["nelia", "nalia", "naila", "nela", "nelia's", "nella", "nalia's", "neila", "nayla", "nyla", "nilia", "neel ya", "nélia", "nalia"],
+  "Nelia Travel": ["nelia travel", "nalia travel", "naila travel", "nela travel", "nella travel", "travel nelia", "travel nalia", "voyage nelia", "voyage nalia"],
+  "Fifth Third": ["fifth third", "fifth 3rd", "53", "fifth", "5th third", "5th 3rd", "fifty third", "fifty three", "fifth third bank", "53 bank", "cinq trois", "cinquante trois"]
+};
 
-  const patterns = [
-    // "mehdi took from amine 5000 dhs to buy personal things"
-    /(\w[\w\s]*?)\s+(?:took|borrowed|received|got)\s+(?:from)\s+(\w[\w\s]*?)\s+(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s*(?:(?:to|for)\s+(.+))?$/i,
-    // "amine paid mehdi 5000 dhs for groceries"
-    /(\w[\w\s]*?)\s+(?:paid|gave|sent|transferred)\s+(?:to\s+)?(\w[\w\s]*?)\s+(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s*(?:(?:to|for)\s+(.+))?$/i,
-    // "amine paid 5000 dhs to mehdi for groceries"
-    /(\w[\w\s]*?)\s+(?:paid|gave|sent|transferred)\s+(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s+(?:to)\s+(\w[\w\s]*?)\s*(?:(?:to|for)\s+(.+))?$/i,
-    // "5000 dhs from amine to mehdi for groceries"
-    /(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s+(?:from)\s+(\w[\w\s]*?)\s+(?:to)\s+(\w[\w\s]*?)\s*(?:(?:to|for)\s+(.+))?$/i,
-  ];
+// ── Currency keywords ──
+const CURRENCY_USD = ["usd", "dollar", "dollars", "us dollar", "us dollars", "buck", "bucks"];
+const CURRENCY_DHS = ["dhs", "dirham", "dirhams", "dirham", "dh", "moroccan", "mad", "درهم"];
 
-  for (let i = 0; i < patterns.length; i++) {
-    const m = t.match(patterns[i]);
-    if (!m) continue;
+// ── Action verbs: who did what to whom ──
+// "took from" pattern: subject RECEIVED money FROM source
+const VERBS_TOOK_FROM = {
+  en: ["took from", "borrowed from", "received from", "got from", "collected from", "picked up from", "withdrew from", "taken from"],
+  fr: ["a pris de", "a pris chez", "a emprunté de", "a emprunté à", "a reçu de", "a récupéré de", "a pris à", "pris de", "pris chez", "emprunté de", "emprunté à", "reçu de", "récupéré de"]
+};
+// "paid/gave to" pattern: subject GAVE money TO target
+const VERBS_GAVE_TO = {
+  en: ["paid", "gave", "sent", "transferred", "paid to", "gave to", "sent to", "transferred to", "handed", "handed to", "wired", "wired to", "paid for", "reimbursed"],
+  fr: ["a payé", "a donné", "a envoyé", "a transféré", "a remboursé", "a versé", "payé", "donné", "envoyé", "transféré", "remboursé", "versé", "a donné à", "a payé à", "a envoyé à", "a remis", "remis"]
+};
+// "owes" pattern: subject OWES money TO target
+const VERBS_OWES = {
+  en: ["owes", "owe", "is owing", "needs to pay"],
+  fr: ["doit", "doit à", "doit payer"]
+};
 
-    let payer, receiver, amount, currStr, desc;
+// ── Description keywords ──
+const DESC_PREFIXES = {
+  en: ["for", "to buy", "to pay for", "to pay", "to get", "to purchase", "because of", "reason", "for buying"],
+  fr: ["pour", "pour acheter", "pour payer", "afin de", "raison", "pour les", "pour le", "pour la", "pour un", "pour une", "pour des"]
+};
 
-    if (i === 0) {
-      // receiver took from payer
-      receiver = m[1].trim();
-      payer = m[2].trim();
-      amount = m[3].replace(/,/g, "");
-      currStr = m[4];
-      desc = m[5] ? m[5].trim() : "Payment";
-    } else if (i === 1) {
-      // payer paid receiver
-      payer = m[1].trim();
-      receiver = m[2].trim();
-      amount = m[3].replace(/,/g, "");
-      currStr = m[4];
-      desc = m[5] ? m[5].trim() : "Payment";
-    } else if (i === 2) {
-      // payer paid amount to receiver
-      payer = m[1].trim();
-      amount = m[2].replace(/,/g, "");
-      currStr = m[3];
-      receiver = m[4].trim();
-      desc = m[5] ? m[5].trim() : "Payment";
-    } else if (i === 3) {
-      // amount from payer to receiver
-      amount = m[1].replace(/,/g, "");
-      currStr = m[2];
-      payer = m[3].trim();
-      receiver = m[4].trim();
-      desc = m[5] ? m[5].trim() : "Payment";
+// ── Number words ──
+const NUMBER_WORDS_EN = {
+  "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+  "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+  "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+  "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+  "hundred": 100, "thousand": 1000, "million": 1000000
+};
+const NUMBER_WORDS_FR = {
+  "zéro": 0, "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "six": 6,
+  "sept": 7, "huit": 8, "neuf": 9, "dix": 10, "onze": 11, "douze": 12, "treize": 13,
+  "quatorze": 14, "quinze": 15, "seize": 16, "vingt": 20, "trente": 30, "quarante": 40,
+  "cinquante": 50, "soixante": 60, "cent": 100, "mille": 1000, "million": 1000000
+};
+
+// ── Levenshtein distance for fuzzy matching ──
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = Math.min(
+        dp[i-1][j] + 1, dp[i][j-1] + 1,
+        dp[i-1][j-1] + (a[i-1] !== b[j-1] ? 1 : 0)
+      );
+  return dp[m][n];
+}
+
+// ── Match a person name with fuzzy matching ──
+function matchPerson(input) {
+  if (!input || input.length < 2) return null;
+  const t = input.toLowerCase().trim().replace(/[''`]/g, "").replace(/\s+/g, " ");
+
+  // Check "nelia travel" / "fifth third" first (multi-word names)
+  for (const [name, variants] of Object.entries(NAME_VARIANTS)) {
+    if (name === "Nelia Travel" || name === "Fifth Third") {
+      for (const v of variants) {
+        if (t === v || t.includes(v)) return name;
+        if (v.length > 3 && levenshtein(t, v) <= 2) return name;
+      }
     }
+  }
 
-    const currency = (currStr.match(/usd|dollar/i)) ? "USD" : "DHS";
-    const amountNum = parseFloat(amount);
-    if (isNaN(amountNum) || amountNum <= 0) continue;
-
-    // Normalize names
-    const normPayer = matchPerson(payer);
-    const normReceiver = matchPerson(receiver);
-    if (!normPayer || !normReceiver || normPayer === normReceiver) continue;
-
-    // Find account
-    const account = findAccount(normPayer, normReceiver);
-    if (!account) continue;
-
-    // Check currency match
-    if (account.currency !== currency) continue;
-
-    return {
-      accountId: account.id,
-      accountLabel: account.label,
-      paidBy: normPayer,
-      receiver: normReceiver,
-      amount: amountNum.toFixed(2),
-      currency,
-      desc: titleCase(desc),
-      date: getToday()
-    };
+  // Then check single names
+  for (const [name, variants] of Object.entries(NAME_VARIANTS)) {
+    if (name === "Nelia Travel" || name === "Fifth Third") continue;
+    for (const v of variants) {
+      if (t === v) return name;
+      // Fuzzy: allow 1-2 char difference for names >= 4 chars
+      if (v.length >= 4 && levenshtein(t, v) <= 1) return name;
+      if (v.length >= 6 && levenshtein(t, v) <= 2) return name;
+    }
+    // Starts-with fallback
+    const firstVar = variants[0];
+    if (t.length >= 3 && firstVar.startsWith(t.slice(0, 3))) return name;
   }
 
   return null;
 }
 
-function matchPerson(input) {
-  const t = input.toLowerCase().trim();
-  // Direct matches
-  if (t === "amine" || t === "amin") return "Amine";
-  if (t === "mehdi" || t === "mahdi" || t === "medi") return "Mehdi";
-  if (t === "nelia" || t === "nalia" || t === "naila" || t === "nela") return "Nelia";
-  if (t === "nelia travel" || t === "nalia travel" || t === "naila travel") return "Nelia Travel";
-  if (t === "fifth third" || t === "fifth 3rd" || t === "53" || t === "fifth") return "Fifth Third";
-  // Fuzzy: starts with
-  if (t.startsWith("amin")) return "Amine";
-  if (t.startsWith("meh") || t.startsWith("mah")) return "Mehdi";
-  if (t.startsWith("nel") || t.startsWith("nal") || t.startsWith("nail")) return "Nelia";
-  return null;
-}
-
+// ── Find account for two people ──
 function findAccount(p1, p2) {
   return ACCOUNTS.find(a =>
     (a.p[0] === p1 && a.p[1] === p2) ||
     (a.p[0] === p2 && a.p[1] === p1)
   );
+}
+
+// ── Extract number from text (digits or words) ──
+function extractAmount(text) {
+  const t = text.toLowerCase().trim();
+
+  // Try digit-based first: find all number-like tokens
+  const digitMatch = t.match(/(\d[\d,.\s]*\d|\d+)/g);
+  if (digitMatch) {
+    for (const dm of digitMatch) {
+      const clean = dm.replace(/[\s,]/g, "");
+      const num = parseFloat(clean);
+      if (!isNaN(num) && num > 0) return num;
+    }
+  }
+
+  // Try number words (e.g., "five thousand", "cinq mille")
+  const allNumWords = { ...NUMBER_WORDS_EN, ...NUMBER_WORDS_FR };
+  const words = t.split(/\s+/);
+  let total = 0, current = 0, foundAny = false;
+  for (const w of words) {
+    if (allNumWords[w] !== undefined) {
+      foundAny = true;
+      const val = allNumWords[w];
+      if (val === 1000 || val === 1000000) {
+        current = (current === 0 ? 1 : current) * val;
+        total += current;
+        current = 0;
+      } else if (val === 100) {
+        current = (current === 0 ? 1 : current) * 100;
+      } else {
+        current += val;
+      }
+    }
+  }
+  total += current;
+  if (foundAny && total > 0) return total;
+
+  return null;
+}
+
+// ── Extract currency from text ──
+function extractCurrency(text) {
+  const t = text.toLowerCase();
+  for (const kw of CURRENCY_USD) { if (t.includes(kw)) return "USD"; }
+  for (const kw of CURRENCY_DHS) { if (t.includes(kw)) return "DHS"; }
+  return "DHS"; // default to DHS
+}
+
+// ── Extract description from text ──
+function extractDescription(text) {
+  const t = text.toLowerCase();
+  const allPrefixes = [...DESC_PREFIXES.en, ...DESC_PREFIXES.fr].sort((a, b) => b.length - a.length);
+  for (const prefix of allPrefixes) {
+    const idx = t.lastIndexOf(prefix);
+    if (idx >= 0) {
+      const desc = text.slice(idx + prefix.length).trim();
+      // Clean desc: remove currency/number noise at the start
+      const cleaned = desc.replace(/^\s*(dhs|dirhams?|dollars?|usd|mad|\d[\d,.]*)\s*/gi, "").trim();
+      if (cleaned.length >= 2) return titleCase(cleaned);
+    }
+  }
+  return null;
+}
+
+// ── Find all person names in text ──
+function findAllPersons(text) {
+  const t = text.toLowerCase().replace(/[''`.,!?]/g, "").replace(/\s+/g, " ").trim();
+  const words = t.split(" ");
+  const found = [];
+
+  // Try multi-word names first
+  for (let i = 0; i < words.length; i++) {
+    if (i + 1 < words.length) {
+      const twoWords = words[i] + " " + words[i + 1];
+      const match = matchPerson(twoWords);
+      if (match && (match === "Nelia Travel" || match === "Fifth Third")) {
+        found.push({ name: match, startIdx: i, endIdx: i + 1, pos: t.indexOf(twoWords) });
+        i++; // skip next word
+        continue;
+      }
+    }
+    const match = matchPerson(words[i]);
+    if (match) {
+      found.push({ name: match, startIdx: i, endIdx: i, pos: t.indexOf(words[i]) });
+    }
+  }
+
+  // Deduplicate: if we found "Nelia" and "Nelia Travel", keep "Nelia Travel"
+  return found.filter((f, idx) => {
+    return !found.some((other, oidx) =>
+      oidx !== idx && other.name.startsWith(f.name) && other.name.length > f.name.length &&
+      Math.abs(other.startIdx - f.startIdx) <= 1
+    );
+  });
+}
+
+// ── Detect direction: who pays whom ──
+function detectDirection(text, persons) {
+  if (persons.length < 2) return null;
+  const t = text.toLowerCase();
+  const p1 = persons[0], p2 = persons[1];
+
+  // Check "took from" patterns: subject took from source → source pays
+  const tookFromVerbs = [...VERBS_TOOK_FROM.en, ...VERBS_TOOK_FROM.fr];
+  for (const verb of tookFromVerbs) {
+    if (t.includes(verb)) {
+      // The person BEFORE the verb took FROM the person after
+      // E.g., "Mehdi took from Amine" → Amine is the payer (source of money)
+      // Find which person is before verb and which after
+      const verbIdx = t.indexOf(verb);
+      if (p1.pos < verbIdx && p2.pos > verbIdx) {
+        return { payer: p2.name, receiver: p1.name }; // p1 took from p2
+      }
+      if (p2.pos < verbIdx && p1.pos > verbIdx) {
+        return { payer: p1.name, receiver: p2.name }; // p2 took from p1
+      }
+      // Fallback: first person took from second
+      return { payer: p2.name, receiver: p1.name };
+    }
+  }
+
+  // Check "gave/paid" patterns: subject paid target → subject is payer
+  const gaveToVerbs = [...VERBS_GAVE_TO.en, ...VERBS_GAVE_TO.fr];
+  for (const verb of gaveToVerbs) {
+    if (t.includes(verb)) {
+      const verbIdx = t.indexOf(verb);
+      if (p1.pos < verbIdx) {
+        return { payer: p1.name, receiver: p2.name }; // p1 paid p2
+      }
+      if (p2.pos < verbIdx) {
+        return { payer: p2.name, receiver: p1.name }; // p2 paid p1
+      }
+      return { payer: p1.name, receiver: p2.name };
+    }
+  }
+
+  // Check "owes" patterns
+  const owesVerbs = [...VERBS_OWES.en, ...VERBS_OWES.fr];
+  for (const verb of owesVerbs) {
+    if (t.includes(verb)) {
+      // "Mehdi owes Amine" → Mehdi is the payer (he owes, so record Amine as paidBy)
+      return { payer: p2.name, receiver: p1.name };
+    }
+  }
+
+  // Check preposition-based: "from X to Y" or "de X à Y"
+  const fromToEN = t.match(/from\s+\S+.*?to\s+\S+/i);
+  const fromToFR = t.match(/de\s+\S+.*?(?:à|a)\s+\S+/i);
+  if (fromToEN || fromToFR) {
+    return { payer: p1.name, receiver: p2.name }; // first name = source
+  }
+
+  // Default: first person mentioned is the payer
+  return { payer: p1.name, receiver: p2.name };
+}
+
+// ── MAIN PARSER ──
+function parseVoiceCommand(text) {
+  if (!text || text.length < 5) return null;
+
+  // 1. Find people
+  const persons = findAllPersons(text);
+  if (persons.length < 2) return null;
+
+  // 2. Extract amount
+  const amount = extractAmount(text);
+  if (!amount || amount <= 0) return null;
+
+  // 3. Extract currency
+  const currency = extractCurrency(text);
+
+  // 4. Detect direction
+  const direction = detectDirection(text, persons);
+  if (!direction) return null;
+
+  // 5. Find the right account
+  const account = findAccount(direction.payer, direction.receiver);
+  if (!account) return null;
+
+  // 6. Check currency compatibility — if mismatch, try defaulting
+  if (account.currency !== currency) {
+    // If user didn't explicitly say a currency, use the account's currency
+    const explicitUSD = CURRENCY_USD.some(k => text.toLowerCase().includes(k));
+    const explicitDHS = CURRENCY_DHS.some(k => text.toLowerCase().includes(k));
+    if (!explicitUSD && !explicitDHS) {
+      // No explicit currency, use account default — that's fine
+    } else {
+      return null; // Explicit mismatch
+    }
+  }
+
+  // 7. Extract description
+  const desc = extractDescription(text) || "Payment";
+
+  return {
+    accountId: account.id,
+    accountLabel: account.label,
+    paidBy: direction.payer,
+    receiver: direction.receiver,
+    amount: amount.toFixed(2),
+    currency: account.currency,
+    desc,
+    date: getToday()
+  };
 }
 
 /* ───────── STYLES ───────── */
@@ -267,12 +472,13 @@ function VoiceCommandButton({ onAddTransaction, user }) {
   const [error, setError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [added, setAdded] = useState(false);
+  const [lang, setLang] = useState("en"); // "en" or "fr"
   const recognitionRef = useRef(null);
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const supported = !!SpeechRecognition;
 
-  const startListening = () => {
+  const startListening = (forceLang) => {
     if (!supported) {
       setError("Voice recognition not supported in this browser. Try Chrome.");
       setShowModal(true);
@@ -284,11 +490,12 @@ function VoiceCommandButton({ onAddTransaction, user }) {
     setAdded(false);
     setShowModal(true);
 
+    const currentLang = forceLang || lang;
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.maxAlternatives = 3;
+    recognition.lang = currentLang === "fr" ? "fr-FR" : "en-US";
+    recognition.maxAlternatives = 5;
 
     recognition.onstart = () => setListening(true);
 
@@ -310,7 +517,10 @@ function VoiceCommandButton({ onAddTransaction, user }) {
           setError("");
         } else {
           setParsed(null);
-          setError("Couldn't understand. Try: \"Mehdi took from Amine 5000 DHS for groceries\"");
+          const tip = currentLang === "fr"
+            ? "Pas compris. Essayez: \"Mehdi a pris de Amine 5000 DHS pour les courses\""
+            : "Couldn't understand. Try: \"Mehdi took from Amine 5000 DHS for groceries\"";
+          setError(tip);
         }
       }
     };
@@ -318,9 +528,9 @@ function VoiceCommandButton({ onAddTransaction, user }) {
     recognition.onerror = (event) => {
       setListening(false);
       if (event.error === "no-speech") {
-        setError("No speech detected. Please try again.");
+        setError(currentLang === "fr" ? "Aucune parole détectée. Réessayez." : "No speech detected. Try again.");
       } else if (event.error === "not-allowed") {
-        setError("Microphone access denied. Please allow microphone access.");
+        setError(currentLang === "fr" ? "Accès micro refusé." : "Microphone access denied.");
       } else {
         setError("Error: " + event.error);
       }
@@ -391,10 +601,17 @@ function VoiceCommandButton({ onAddTransaction, user }) {
     textAlign: "center", position: "relative"
   };
 
+  const langToggleStyle = (active) => ({
+    padding: "6px 16px", borderRadius: 20, border: "none", cursor: "pointer",
+    fontWeight: 700, fontSize: 13, transition: "all 0.2s",
+    background: active ? "#4F46E5" : "#F1F5F9",
+    color: active ? "white" : "#64748B"
+  });
+
   return (
     <>
       {/* FAB */}
-      <button onClick={startListening} style={fabStyle} title="Voice command">
+      <button onClick={() => startListening()} style={fabStyle} title="Voice command">
         {"\uD83C\uDF99\uFE0F"}
       </button>
 
@@ -405,12 +622,32 @@ function VoiceCommandButton({ onAddTransaction, user }) {
             {/* Close */}
             <button onClick={closeModal} style={{ position: "absolute", top: 12, right: 16, background: "none", border: "none", fontSize: 20, color: "#94A3B8", cursor: "pointer" }}>{"\u2715"}</button>
 
+            {/* Language toggle */}
+            <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 16 }}>
+              <button onClick={() => { setLang("en"); }} style={langToggleStyle(lang === "en")}>{"\uD83C\uDDEC\uD83C\uDDE7"} English</button>
+              <button onClick={() => { setLang("fr"); }} style={langToggleStyle(lang === "fr")}>{"\uD83C\uDDEB\uD83C\uDDF7"} Fran\u00E7ais</button>
+            </div>
+
             <div style={{ fontSize: 36, marginBottom: 12 }}>{listening ? "\uD83C\uDF99\uFE0F" : added ? "\u2705" : "\uD83C\uDFA4"}</div>
             <h2 style={{ fontSize: 20, fontWeight: 800, color: "#1E293B", marginBottom: 4 }}>
-              {added ? "Transaction Added!" : listening ? "Listening..." : parsed ? "Confirm Transaction" : "Voice Command"}
+              {added
+                ? (lang === "fr" ? "Transaction ajout\u00E9e !" : "Transaction Added!")
+                : listening
+                ? (lang === "fr" ? "\u00C9coute en cours..." : "Listening...")
+                : parsed
+                ? (lang === "fr" ? "Confirmer la transaction" : "Confirm Transaction")
+                : (lang === "fr" ? "Commande vocale" : "Voice Command")
+              }
             </h2>
             <p style={{ fontSize: 13, color: "#94A3B8", marginBottom: 20 }}>
-              {added ? "Successfully saved" : listening ? "Speak now..." : !transcript && !error ? "Tap the mic to start speaking" : ""}
+              {added
+                ? (lang === "fr" ? "Enregistr\u00E9 avec succ\u00E8s" : "Successfully saved")
+                : listening
+                ? (lang === "fr" ? "Parlez maintenant..." : "Speak now...")
+                : !transcript && !error
+                ? (lang === "fr" ? "Appuyez sur le micro pour parler" : "Tap the mic to start speaking")
+                : ""
+              }
             </p>
 
             {/* Mic animation */}
@@ -424,7 +661,9 @@ function VoiceCommandButton({ onAddTransaction, user }) {
                 }} onClick={stopListening}>
                   <span style={{ fontSize: 32 }}>{"\uD83C\uDF99\uFE0F"}</span>
                 </div>
-                <div style={{ marginTop: 8, fontSize: 12, color: "#EF4444", fontWeight: 600 }}>Tap to stop</div>
+                <div style={{ marginTop: 8, fontSize: 12, color: "#EF4444", fontWeight: 600 }}>
+                  {lang === "fr" ? "Appuyez pour arr\u00EAter" : "Tap to stop"}
+                </div>
               </div>
             )}
 
@@ -434,7 +673,9 @@ function VoiceCommandButton({ onAddTransaction, user }) {
                 background: "#F8FAFC", borderRadius: 12, padding: "14px 18px", marginBottom: 16,
                 border: "1px solid #E2E8F0", textAlign: "left"
               }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>You said:</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                  {lang === "fr" ? "Vous avez dit :" : "You said:"}
+                </div>
                 <div style={{ fontSize: 15, color: "#1E293B", fontWeight: 500, fontStyle: "italic" }}>"{transcript}"</div>
               </div>
             )}
@@ -452,12 +693,14 @@ function VoiceCommandButton({ onAddTransaction, user }) {
                 background: "#EEF2FF", borderRadius: 12, padding: "16px 18px", marginBottom: 16,
                 border: "1px solid #C7D2FE", textAlign: "left"
               }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>Parsed Transaction</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>
+                  {lang === "fr" ? "Transaction d\u00E9tect\u00E9e" : "Parsed Transaction"}
+                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Account:</span><br/><strong style={{ fontSize: 14 }}>{parsed.accountLabel}</strong></div>
-                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Amount:</span><br/><strong style={{ fontSize: 14, color: "#4F46E5" }}>{parsed.amount} {parsed.currency}</strong></div>
-                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Paid By:</span><br/><strong style={{ fontSize: 14 }}>{parsed.paidBy}</strong></div>
-                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Description:</span><br/><strong style={{ fontSize: 14 }}>{parsed.desc}</strong></div>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>{lang === "fr" ? "Compte :" : "Account:"}</span><br/><strong style={{ fontSize: 14 }}>{parsed.accountLabel}</strong></div>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>{lang === "fr" ? "Montant :" : "Amount:"}</span><br/><strong style={{ fontSize: 14, color: "#4F46E5" }}>{parsed.amount} {parsed.currency}</strong></div>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>{lang === "fr" ? "Pay\u00E9 par :" : "Paid By:"}</span><br/><strong style={{ fontSize: 14 }}>{parsed.paidBy}</strong></div>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Description :</span><br/><strong style={{ fontSize: 14 }}>{parsed.desc}</strong></div>
                 </div>
               </div>
             )}
@@ -467,25 +710,38 @@ function VoiceCommandButton({ onAddTransaction, user }) {
               <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
                 {parsed ? (
                   <>
-                    <button onClick={startListening} style={{ ...S.btnS, padding: "10px 20px" }}>{"\uD83C\uDFA4"} Retry</button>
-                    <button onClick={confirmAdd} style={{ ...S.btnP, padding: "10px 28px", background: "#10B981" }}>{"\u2713"} Confirm & Add</button>
+                    <button onClick={() => startListening()} style={{ ...S.btnS, padding: "10px 20px" }}>{"\uD83C\uDFA4"} {lang === "fr" ? "R\u00E9essayer" : "Retry"}</button>
+                    <button onClick={confirmAdd} style={{ ...S.btnP, padding: "10px 28px", background: "#10B981" }}>{"\u2713"} {lang === "fr" ? "Confirmer" : "Confirm & Add"}</button>
                   </>
                 ) : (
-                  <button onClick={startListening} style={{ ...S.btnP, padding: "12px 32px", fontSize: 15 }}>{"\uD83C\uDFA4"} {transcript ? "Try Again" : "Start Listening"}</button>
+                  <button onClick={() => startListening()} style={{ ...S.btnP, padding: "12px 32px", fontSize: 15 }}>
+                    {"\uD83C\uDFA4"} {transcript ? (lang === "fr" ? "R\u00E9essayer" : "Try Again") : (lang === "fr" ? "Commencer" : "Start Listening")}
+                  </button>
                 )}
               </div>
             )}
 
-            {/* Examples */}
+            {/* Examples — bilingual */}
             {!transcript && !listening && !added && (
               <div style={{ marginTop: 20, textAlign: "left" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Examples:</div>
-                <div style={{ fontSize: 12, color: "#64748B", lineHeight: 1.8 }}>
-                  <div>"Mehdi took from Amine 5000 DHS for groceries"</div>
-                  <div>"Amine paid Nelia 200 DHS for dinner"</div>
-                  <div>"Nelia gave Mehdi 1000 DHS for rent"</div>
-                  <div>"Amine paid Fifth Third 50 USD for subscription"</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                  {lang === "fr" ? "Exemples :" : "Examples:"}
                 </div>
+                {lang === "fr" ? (
+                  <div style={{ fontSize: 12, color: "#64748B", lineHeight: 1.8 }}>
+                    <div>"Mehdi a pris de Amine 5000 DHS pour les courses"</div>
+                    <div>"Amine a pay\u00E9 Nelia 200 DHS pour le d\u00EEner"</div>
+                    <div>"Nelia a donn\u00E9 Mehdi 1000 DHS pour le loyer"</div>
+                    <div>"Amine a pay\u00E9 Fifth Third 50 dollars"</div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "#64748B", lineHeight: 1.8 }}>
+                    <div>"Mehdi took from Amine 5000 DHS for groceries"</div>
+                    <div>"Amine paid Nelia 200 DHS for dinner"</div>
+                    <div>"Nelia gave Mehdi 1000 DHS for rent"</div>
+                    <div>"Amine paid Fifth Third 50 USD for subscription"</div>
+                  </div>
+                )}
               </div>
             )}
           </div>
