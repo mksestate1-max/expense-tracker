@@ -306,21 +306,31 @@ function detectDirection(text, persons) {
   const t = text.toLowerCase();
   const p1 = persons[0], p2 = persons[1];
 
-  // Check "took from" patterns: subject took from source → source pays
-  const tookFromVerbs = [...VERBS_TOOK_FROM.en, ...VERBS_TOOK_FROM.fr];
-  for (const verb of tookFromVerbs) {
-    if (t.includes(verb)) {
-      // The person BEFORE the verb took FROM the person after
-      // E.g., "Mehdi took from Amine" → Amine is the payer (source of money)
-      // Find which person is before verb and which after
-      const verbIdx = t.indexOf(verb);
+  // ── SPLIT VERB DETECTION ──
+  // Handles cases like "amine took 5000 dhs from nelia" where verb and preposition are separated
+  const tookVerbs_en = ["took", "borrowed", "received", "got", "collected", "picked up", "withdrew", "taken"];
+  const tookVerbs_fr = ["a pris", "a emprunté", "a reçu", "a récupéré", "pris", "emprunté", "reçu", "récupéré"];
+  const fromPreps = ["from", "de", "chez", "à"];
+  const allTookVerbs = [...tookVerbs_en, ...tookVerbs_fr];
+
+  // Check for "took ... from" pattern (verb and preposition may be separated by amount/currency)
+  for (const verb of allTookVerbs) {
+    const verbIdx = t.indexOf(verb);
+    if (verbIdx === -1) continue;
+    // Look for a "from" preposition AFTER the verb
+    for (const prep of fromPreps) {
+      const afterVerb = t.substring(verbIdx + verb.length);
+      const prepIdx = afterVerb.indexOf(prep);
+      if (prepIdx === -1) continue;
+      const absPrepIdx = verbIdx + verb.length + prepIdx;
+      // Found "took ... from" pattern! Person before verb took FROM person after prep
+      // The person AFTER "from" is the SOURCE (payer), person before verb is RECEIVER
       if (p1.pos < verbIdx && p2.pos > verbIdx) {
-        return { payer: p2.name, receiver: p1.name }; // p1 took from p2
+        return { payer: p2.name, receiver: p1.name }; // p1 took from p2 → p2 pays
       }
       if (p2.pos < verbIdx && p1.pos > verbIdx) {
-        return { payer: p1.name, receiver: p2.name }; // p2 took from p1
+        return { payer: p1.name, receiver: p2.name }; // p2 took from p1 → p1 pays
       }
-      // Fallback: first person took from second
       return { payer: p2.name, receiver: p1.name };
     }
   }
