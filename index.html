@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Expense Tracker — Amine · Mehdi · Nelia</title>
+
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+<!-- React -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #F1F5F9; }
+  input, select, button { font-family: inherit; }
+  input:focus, select:focus { outline: 2px solid #818CF8; outline-offset: -1px; }
+  button:hover { opacity: 0.92; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  .fade-in { animation: fadeIn 0.3s ease-out; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useCallback, useMemo, useEffect, useRef } = React;
+
+/* ════════════════════════════════════════
+   FIREBASE CONFIG — REPLACE WITH YOUR OWN
+   ════════════════════════════════════════ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyB0CDHacwx3nymRCTcJlbIPOZoSDjKyhfs",
+  authDomain: "expense-tracker-43ecb.firebaseapp.com",
+  projectId: "expense-tracker-43ecb",
+  storageBucket: "expense-tracker-43ecb.firebasestorage.app",
+  messagingSenderId: "554568244159",
+  appId: "1:554568244159:web:869de803b80634c2e51f0a"
+};
+
+// Initialize Firebase
+const app = firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* ───────── CONSTANTS ───────── */
+const ACCOUNTS = [
+  { id: "amine-mehdi", label: "Amine vs Mehdi", currency: "DHS", p: ["Amine", "Mehdi"], icon: "\u{1F465}" },
+  { id: "amine-nelia", label: "Amine vs Nelia", currency: "DHS", p: ["Amine", "Nelia"], icon: "\u{1F46B}" },
+  { id: "mehdi-nelia", label: "Mehdi vs Nelia", currency: "DHS", p: ["Mehdi", "Nelia"], icon: "\u{1F91D}" },
+  { id: "nelia-nelia-travel", label: "Nelia vs Nelia Travel", currency: "DHS", p: ["Nelia", "Nelia Travel"], icon: "\u2708\uFE0F" },
+  { id: "amine-nelia-travel", label: "Amine vs Nelia Travel", currency: "DHS", p: ["Amine", "Nelia Travel"], icon: "\u{1F9F3}" },
+  { id: "mehdi-nelia-travel", label: "Mehdi vs Nelia Travel", currency: "DHS", p: ["Mehdi", "Nelia Travel"], icon: "\u{1F30D}" },
+  { id: "amine-fifth-third", label: "Amine vs Fifth Third", currency: "USD", p: ["Amine", "Fifth Third"], icon: "\u{1F3E6}" },
+  { id: "mehdi-fifth-third", label: "Mehdi vs Fifth Third", currency: "USD", p: ["Mehdi", "Fifth Third"], icon: "\u{1F3DB}\uFE0F" },
+];
+
+const getToday = () => new Date().toISOString().split("T")[0];
+const money = (n, c) => {
+  const s = Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return (n < 0 ? "-" : "") + s + " " + c;
+};
+const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const fmtTime = (ts) => {
+  if (!ts) return "";
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+};
+
+/* ───────── STYLES ───────── */
+const S = {
+  root: { display: "flex", height: "100vh", background: "#F1F5F9", color: "#1E293B", fontSize: 14 },
+  sidebar: { width: 260, background: "#1E293B", color: "#CBD5E1", display: "flex", flexDirection: "column", flexShrink: 0 },
+  sideHead: { padding: "24px 20px 16px", borderBottom: "1px solid #334155" },
+  sideTitle: { fontSize: 18, fontWeight: 800, color: "#F8FAFC", letterSpacing: -0.3 },
+  sideSub: { fontSize: 11, color: "#64748B", marginTop: 4 },
+  navList: { flex: 1, overflowY: "auto", padding: "8px 0" },
+  navItem: (active) => ({
+    display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", cursor: "pointer",
+    background: active ? "#334155" : "transparent", color: active ? "#F8FAFC" : "#94A3B8",
+    fontSize: 13, fontWeight: active ? 600 : 400,
+    borderLeft: active ? "3px solid #818CF8" : "3px solid transparent", transition: "all 0.15s"
+  }),
+  navIcon: { fontSize: 16, width: 24, textAlign: "center" },
+  navBadge: (c) => ({
+    marginLeft: "auto", fontSize: 10,
+    background: c === "USD" ? "#FDE68A" : "#A7F3D0",
+    color: c === "USD" ? "#92400E" : "#065F46",
+    padding: "2px 7px", borderRadius: 10, fontWeight: 700
+  }),
+  main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
+  topBar: { background: "white", padding: "16px 32px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 },
+  content: { flex: 1, overflowY: "auto", padding: 32 },
+  card: { background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" },
+  input: { padding: "10px 14px", border: "1px solid #CBD5E1", borderRadius: 8, fontSize: 14, background: "white", width: "100%", boxSizing: "border-box" },
+  select: { padding: "10px 14px", border: "1px solid #CBD5E1", borderRadius: 8, fontSize: 14, background: "white", width: "100%", boxSizing: "border-box" },
+  btnP: { padding: "10px 24px", borderRadius: 8, border: "none", background: "#4F46E5", color: "white", fontWeight: 700, fontSize: 14, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 },
+  btnS: { padding: "10px 24px", borderRadius: 8, border: "1px solid #CBD5E1", background: "white", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 },
+  btnD: { padding: "4px 10px", borderRadius: 6, border: "none", background: "#FEE2E2", color: "#DC2626", fontSize: 12, cursor: "pointer", fontWeight: 600 },
+  btnGoogle: { padding: "12px 28px", borderRadius: 10, border: "1px solid #E2E8F0", background: "white", color: "#1E293B", fontWeight: 600, fontSize: 15, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 10, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "left", padding: "12px 16px", fontSize: 11, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "2px solid #E2E8F0", background: "#F8FAFC" },
+  td: { padding: "14px 16px", borderBottom: "1px solid #F1F5F9", fontSize: 14 },
+  thR: { textAlign: "right", padding: "12px 16px", fontSize: 11, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "2px solid #E2E8F0", background: "#F8FAFC" },
+  tdR: { padding: "14px 16px", borderBottom: "1px solid #F1F5F9", fontSize: 14, textAlign: "right" },
+};
+
+/* ═══════════════════════════════════════
+   LOGIN SCREEN
+   ═══════════════════════════════════════ */
+function LoginScreen({ onLogin }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleGoogle = async () => {
+    setLoading(true); setError("");
+    try {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      await auth.signInWithPopup(provider);
+    } catch (e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const handleEmail = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError("");
+    try {
+      if (mode === "signup") {
+        const cred = await auth.createUserWithEmailAndPassword(email, password);
+        await cred.user.updateProfile({ displayName: name });
+      } else {
+        await auth.signInWithEmailAndPassword(email, password);
+      }
+    } catch (e) {
+      setError(e.message.replace("Firebase: ", "").replace(/ \(auth\/.*\)/, ""));
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #1E293B 0%, #334155 50%, #475569 100%)" }}>
+      <div className="fade-in" style={{ background: "white", borderRadius: 20, padding: "48px 40px", width: 420, maxWidth: "90vw", boxShadow: "0 25px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>{"\uD83D\uDCB0"}</div>
+          <h1 style={{ fontSize: 24, fontWeight: 800, color: "#1E293B", marginBottom: 4 }}>Expense Tracker</h1>
+          <p style={{ color: "#94A3B8", fontSize: 14 }}>Amine {"\u00B7"} Mehdi {"\u00B7"} Nelia</p>
+        </div>
+
+        {/* Google Login */}
+        <button onClick={handleGoogle} disabled={loading} style={{ ...S.btnGoogle, width: "100%", justifyContent: "center", marginBottom: 20 }}>
+          <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+          {loading ? "Signing in..." : "Continue with Google"}
+        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+          <div style={{ flex: 1, height: 1, background: "#E2E8F0" }}></div>
+          <span style={{ fontSize: 12, color: "#94A3B8", fontWeight: 500 }}>or use email</span>
+          <div style={{ flex: 1, height: 1, background: "#E2E8F0" }}></div>
+        </div>
+
+        {/* Email/Password */}
+        <form onSubmit={handleEmail}>
+          {mode === "signup" && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Your Name</label>
+              <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Amine, Mehdi, or Nelia" required style={S.input} />
+            </div>
+          )}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Email</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" required style={S.input} />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Password</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={"\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"} required minLength={6} style={S.input} />
+          </div>
+
+          {error && <div style={{ background: "#FEF2F2", color: "#DC2626", padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{error}</div>}
+
+          <button type="submit" disabled={loading} style={{ ...S.btnP, width: "100%", justifyContent: "center", padding: "12px 24px", fontSize: 15 }}>
+            {loading ? "Please wait..." : mode === "signup" ? "Create Account" : "Sign In"}
+          </button>
+        </form>
+
+        <div style={{ textAlign: "center", marginTop: 18 }}>
+          <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); }}
+            style={{ background: "none", border: "none", color: "#4F46E5", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+            {mode === "login" ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════
+   DASHBOARD
+   ═══════════════════════════════════════ */
+function Dashboard({ data, onNav }) {
+  const summaries = ACCOUNTS.map((a) => {
+    const txns = data[a.id] || [];
+    let bal = 0;
+    txns.forEach((t) => { bal += t.paidBy === a.p[0] ? parseFloat(t.amount) : -parseFloat(t.amount); });
+    return { ...a, bal, count: txns.length };
+  });
+  const totalDHS = summaries.filter((s) => s.currency === "DHS").reduce((sum, s) => sum + Math.abs(s.bal), 0);
+  const totalUSD = summaries.filter((s) => s.currency === "USD").reduce((sum, s) => sum + Math.abs(s.bal), 0);
+  const totalTxns = summaries.reduce((s, a) => s + a.count, 0);
+
+  return (
+    <div className="fade-in">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
+        <div style={{ ...S.card, padding: "20px 24px" }}>
+          <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Total Outstanding DHS</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#4F46E5", marginTop: 4 }}>{money(totalDHS, "DHS")}</div>
+        </div>
+        <div style={{ ...S.card, padding: "20px 24px" }}>
+          <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Total Outstanding USD</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#EA580C", marginTop: 4 }}>{money(totalUSD, "USD")}</div>
+        </div>
+        <div style={{ ...S.card, padding: "20px 24px" }}>
+          <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Total Transactions</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#0F172A", marginTop: 4 }}>{totalTxns}</div>
+        </div>
+      </div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14, color: "#334155" }}>All Accounts</h2>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
+        {summaries.map((a) => {
+          const settled = Math.abs(a.bal) < 0.01;
+          const owes = a.bal > 0 ? a.p[1] : a.p[0];
+          const owed = a.bal > 0 ? a.p[0] : a.p[1];
+          return (
+            <div key={a.id} onClick={() => onNav(a.id)} style={{ ...S.card, padding: "20px 24px", cursor: "pointer", transition: "box-shadow 0.15s" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div>
+                  <div style={{ fontSize: 22, marginBottom: 6 }}>{a.icon}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#1E293B" }}>{a.label}</div>
+                  <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>{a.count} transaction{a.count !== 1 ? "s" : ""}</div>
+                </div>
+                <span style={{ ...S.navBadge(a.currency), fontSize: 11 }}>{a.currency}</span>
+              </div>
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #F1F5F9" }}>
+                {settled
+                  ? <span style={{ color: "#10B981", fontWeight: 600, fontSize: 14 }}>{"\u2713"} Settled</span>
+                  : <div>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: "#1E293B" }}>{money(a.bal, a.currency)}</div>
+                      <div style={{ fontSize: 12, color: "#64748B", marginTop: 2 }}>{owes} owes {owed}</div>
+                    </div>
+                }
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════
+   ACCOUNT VIEW
+   ═══════════════════════════════════════ */
+function AccountView({ account, transactions, onAdd, onDelete, user }) {
+  const [showForm, setShowForm] = useState(false);
+  const [showConvert, setShowConvert] = useState(false);
+  const [form, setForm] = useState({ amount: "", paidBy: account.p[0], desc: "", date: getToday() });
+  const [conv, setConv] = useState({ usd: "", rate: "" });
+  const [sortDir, setSortDir] = useState("desc");
+
+  const balance = useMemo(() => {
+    let b = 0;
+    transactions.forEach((t) => { b += t.paidBy === account.p[0] ? parseFloat(t.amount) : -parseFloat(t.amount); });
+    return b;
+  }, [transactions, account.p]);
+
+  const sorted = useMemo(() => {
+    const copy = [...transactions];
+    copy.sort((a, b) => sortDir === "desc" ? b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0) : a.date.localeCompare(b.date) || (a.createdAt || 0) - (b.createdAt || 0));
+    return copy;
+  }, [transactions, sortDir]);
+
+  const withRunning = useMemo(() => {
+    const chrono = [...transactions].sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt || 0) - (b.createdAt || 0));
+    const map = {};
+    let running = 0;
+    chrono.forEach((t) => {
+      running += t.paidBy === account.p[0] ? parseFloat(t.amount) : -parseFloat(t.amount);
+      map[t.docId || t.id] = running;
+    });
+    return map;
+  }, [transactions, account.p]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!form.amount || parseFloat(form.amount) <= 0) return;
+    onAdd(account.id, {
+      amount: parseFloat(form.amount).toFixed(2),
+      paidBy: form.paidBy,
+      desc: form.desc || "Payment",
+      date: form.date,
+      addedBy: user.displayName || user.email,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    setForm({ amount: "", paidBy: account.p[0], desc: "", date: getToday() });
+    setShowForm(false);
+  };
+
+  const handleConvertApply = () => {
+    const result = (parseFloat(conv.usd) * parseFloat(conv.rate)).toFixed(2);
+    setForm((f) => ({ ...f, amount: result }));
+    setShowConvert(false);
+    setConv({ usd: "", rate: "" });
+    if (!showForm) setShowForm(true);
+  };
+
+  const settled = Math.abs(balance) < 0.01;
+  const owes = balance > 0 ? account.p[1] : account.p[0];
+  const owed = balance > 0 ? account.p[0] : account.p[1];
+  const convResult = conv.usd && conv.rate ? (parseFloat(conv.usd) * parseFloat(conv.rate)).toFixed(2) : "";
+
+  return (
+    <div className="fade-in">
+      {/* Balance */}
+      <div style={{ ...S.card, padding: "24px 28px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Current Balance</div>
+          {settled
+            ? <div style={{ fontSize: 28, fontWeight: 800, color: "#10B981" }}>{"\u2713"} Settled</div>
+            : <div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: "#1E293B" }}>{money(balance, account.currency)}</div>
+                <div style={{ fontSize: 14, color: "#64748B", marginTop: 2 }}>{owes} owes {owed}</div>
+              </div>
+          }
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {account.currency === "DHS" && <button onClick={() => setShowConvert(!showConvert)} style={S.btnS}>{"\uD83D\uDCB1"} Convert USD</button>}
+          <button onClick={() => setShowForm(!showForm)} style={S.btnP}>{showForm ? "\u2715 Cancel" : "+ New Transaction"}</button>
+        </div>
+      </div>
+
+      {/* Converter */}
+      {showConvert && (
+        <div style={{ ...S.card, padding: "20px 28px", marginBottom: 20, background: "#FFFBEB", borderColor: "#FDE68A" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: "#92400E" }}>{"\uD83D\uDCB1"} USD {"\u2192"} DHS Converter</div>
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 120px" }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#78716C", display: "block", marginBottom: 4 }}>USD Amount</label>
+              <input type="number" step="0.01" value={conv.usd} onChange={(e) => setConv({ ...conv, usd: e.target.value })} placeholder="0.00" style={S.input} />
+            </div>
+            <div style={{ fontSize: 20, color: "#D97706", fontWeight: 700, paddingBottom: 8 }}>{"\u00D7"}</div>
+            <div style={{ flex: "1 1 120px" }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#78716C", display: "block", marginBottom: 4 }}>Rate (1 USD = ? DHS)</label>
+              <input type="number" step="0.0001" value={conv.rate} onChange={(e) => setConv({ ...conv, rate: e.target.value })} placeholder="10.05" style={S.input} />
+            </div>
+            <div style={{ fontSize: 20, color: "#D97706", fontWeight: 700, paddingBottom: 8 }}>=</div>
+            <div style={{ flex: "1 1 120px" }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#78716C", display: "block", marginBottom: 4 }}>Result (DHS)</label>
+              <div style={{ padding: "10px 14px", background: "white", borderRadius: 8, border: "1px solid #CBD5E1", fontSize: 16, fontWeight: 700, color: convResult ? "#4F46E5" : "#CBD5E1", minHeight: 40 }}>{convResult || "\u2014"}</div>
+            </div>
+            <button disabled={!convResult} onClick={handleConvertApply} style={{ ...S.btnP, background: convResult ? "#D97706" : "#CBD5E1", whiteSpace: "nowrap", cursor: convResult ? "pointer" : "default" }}>Use in Form {"\u2193"}</button>
+          </div>
+        </div>
+      )}
+
+      {/* Add Form */}
+      {showForm && (
+        <div style={{ ...S.card, padding: "20px 28px", marginBottom: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14, color: "#334155" }}>Add Transaction</div>
+          <form onSubmit={handleSubmit}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr 1fr", gap: 12, alignItems: "flex-end" }}>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Amount ({account.currency})</label>
+                <input type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" required style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Paid By</label>
+                <select value={form.paidBy} onChange={(e) => setForm({ ...form, paidBy: e.target.value })} style={S.select}>
+                  {account.p.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Description</label>
+                <input type="text" value={form.desc} onChange={(e) => setForm({ ...form, desc: e.target.value })} placeholder="What was this for?" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Date</label>
+                <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={S.input} />
+              </div>
+            </div>
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+              <button type="submit" style={S.btnP}>Add Transaction</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Table */}
+      <div style={S.card}>
+        <div style={{ padding: "16px 28px", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#334155" }}>Transactions ({transactions.length})</div>
+          <button onClick={() => setSortDir(sortDir === "desc" ? "asc" : "desc")} style={{ ...S.btnS, padding: "6px 14px", fontSize: 12 }}>
+            {sortDir === "desc" ? "\u2193 Newest First" : "\u2191 Oldest First"}
+          </button>
+        </div>
+        {transactions.length === 0
+          ? <div style={{ padding: "60px 20px", textAlign: "center" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>{"\uD83D\uDCCB"}</div>
+              <div style={{ fontSize: 15, color: "#94A3B8", fontWeight: 500 }}>No transactions yet</div>
+              <div style={{ fontSize: 13, color: "#CBD5E1", marginTop: 4 }}>Click "+ New Transaction" to add one</div>
+            </div>
+          : <div style={{ overflowX: "auto" }}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>#</th>
+                    <th style={S.th}>Date</th>
+                    <th style={S.th}>Description</th>
+                    <th style={S.th}>Paid By</th>
+                    <th style={S.thR}>Amount</th>
+                    <th style={S.thR}>Running Balance</th>
+                    <th style={S.th}>Added By</th>
+                    <th style={{ ...S.th, textAlign: "center", width: 70 }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map((t, i) => {
+                    const key = t.docId || t.id;
+                    const rb = withRunning[key] || 0;
+                    const rowIdx = sortDir === "desc" ? transactions.length - i : i + 1;
+                    return (
+                      <tr key={key}>
+                        <td style={{ ...S.td, color: "#94A3B8", fontSize: 12, fontWeight: 600 }}>{rowIdx}</td>
+                        <td style={{ ...S.td, fontWeight: 500, whiteSpace: "nowrap" }}>{fmtDate(t.date)}</td>
+                        <td style={{ ...S.td, maxWidth: 220 }}><div style={{ fontWeight: 600 }}>{t.desc}</div></td>
+                        <td style={S.td}>
+                          <span style={{
+                            background: t.paidBy === account.p[0] ? "#EEF2FF" : "#FEF3C7",
+                            color: t.paidBy === account.p[0] ? "#4F46E5" : "#D97706",
+                            padding: "3px 10px", borderRadius: 12, fontSize: 12, fontWeight: 700
+                          }}>{t.paidBy}</span>
+                        </td>
+                        <td style={{ ...S.tdR, fontWeight: 700, fontSize: 15, fontVariantNumeric: "tabular-nums" }}>{money(parseFloat(t.amount), account.currency)}</td>
+                        <td style={{ ...S.tdR, fontVariantNumeric: "tabular-nums" }}>
+                          <span style={{ fontWeight: 700, color: rb > 0 ? "#059669" : rb < 0 ? "#DC2626" : "#6B7280" }}>{rb > 0 ? "+" : ""}{money(rb, account.currency)}</span>
+                          <div style={{ fontSize: 11, color: "#94A3B8" }}>{Math.abs(rb) < 0.01 ? "settled" : rb > 0 ? account.p[1] + " owes" : account.p[0] + " owes"}</div>
+                        </td>
+                        <td style={{ ...S.td, fontSize: 12, color: "#94A3B8" }}>
+                          <div>{t.addedBy || "—"}</div>
+                          <div style={{ fontSize: 11 }}>{fmtTime(t.createdAt)}</div>
+                        </td>
+                        <td style={{ ...S.td, textAlign: "center" }}>
+                          <button onClick={() => onDelete(account.id, t.docId)} style={S.btnD}>Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+        }
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════
+   MAIN APP
+   ═══════════════════════════════════════ */
+function App() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [page, setPage] = useState("dashboard");
+  const [data, setData] = useState(() => {
+    const d = {};
+    ACCOUNTS.forEach((a) => { d[a.id] = []; });
+    return d;
+  });
+
+  // Listen to auth state
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((u) => {
+      setUser(u);
+      setAuthLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // Listen to Firestore in real-time
+  useEffect(() => {
+    if (!user) return;
+    const unsubs = ACCOUNTS.map((account) => {
+      return db.collection("accounts").doc(account.id).collection("transactions")
+        .orderBy("date", "asc")
+        .onSnapshot((snapshot) => {
+          const txns = snapshot.docs.map((doc) => ({ docId: doc.id, ...doc.data() }));
+          setData((prev) => ({ ...prev, [account.id]: txns }));
+        }, (err) => {
+          console.error("Firestore error for " + account.id, err);
+        });
+    });
+    return () => unsubs.forEach((u) => u());
+  }, [user]);
+
+  const addTransaction = useCallback((accountId, txn) => {
+    db.collection("accounts").doc(accountId).collection("transactions").add(txn);
+  }, []);
+
+  const deleteTransaction = useCallback((accountId, docId) => {
+    if (!docId) return;
+    db.collection("accounts").doc(accountId).collection("transactions").doc(docId).delete();
+  }, []);
+
+  const handleLogout = () => { auth.signOut(); setPage("dashboard"); };
+
+  // Loading
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#1E293B" }}>
+        <div style={{ textAlign: "center", color: "white" }}>
+          <div style={{ width: 40, height: 40, border: "4px solid #475569", borderTopColor: "#818CF8", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }}></div>
+          <div style={{ fontSize: 14, color: "#94A3B8" }}>Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Not logged in
+  if (!user) return <LoginScreen />;
+
+  const currentAccount = ACCOUNTS.find((a) => a.id === page);
+
+  return (
+    <div style={S.root}>
+      {/* SIDEBAR */}
+      <div style={S.sidebar}>
+        <div style={S.sideHead}>
+          <h1 style={S.sideTitle}>{"\uD83D\uDCB0"} Expense Tracker</h1>
+          <div style={S.sideSub}>Amine {"\u00B7"} Mehdi {"\u00B7"} Nelia</div>
+        </div>
+        <div style={S.navList}>
+          <div onClick={() => setPage("dashboard")} style={S.navItem(page === "dashboard")}>
+            <span style={S.navIcon}>{"\uD83D\uDCCA"}</span> Dashboard
+          </div>
+          <div style={{ padding: "14px 20px 6px", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#475569" }}>Accounts</div>
+          {ACCOUNTS.map((a) => {
+            const count = (data[a.id] || []).length;
+            return (
+              <div key={a.id} onClick={() => setPage(a.id)} style={S.navItem(page === a.id)}>
+                <span style={S.navIcon}>{a.icon}</span>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.label}</span>
+                {count > 0 && <span style={{ fontSize: 11, color: "#64748B", marginRight: 4 }}>{count}</span>}
+                <span style={S.navBadge(a.currency)}>{a.currency}</span>
+              </div>
+            );
+          })}
+        </div>
+        {/* User info */}
+        <div style={{ padding: "14px 20px", borderTop: "1px solid #334155" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#4F46E5", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
+              {(user.displayName || user.email || "?")[0].toUpperCase()}
+            </div>
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#F8FAFC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.displayName || "User"}</div>
+              <div style={{ fontSize: 10, color: "#64748B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</div>
+            </div>
+            <button onClick={handleLogout} title="Sign out" style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 16, padding: 4 }}>{"\u23FB"}</button>
+          </div>
+        </div>
+      </div>
+
+      {/* MAIN */}
+      <div style={S.main}>
+        <div style={S.topBar}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#1E293B" }}>
+              {page === "dashboard" ? "Dashboard" : currentAccount?.label}
+            </div>
+            <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>
+              {page === "dashboard"
+                ? "Overview of all accounts and balances"
+                : (currentAccount?.currency === "USD" ? "\uD83C\uDDFA\uD83C\uDDF8" : "\uD83C\uDDF2\uD83C\uDDE6") + " " + currentAccount?.currency + " \u00B7 " + currentAccount?.p[0] + " and " + currentAccount?.p[1]}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#10B981" }}></div>
+            <span style={{ fontSize: 12, color: "#10B981", fontWeight: 600 }}>Live sync</span>
+            {page !== "dashboard" && <button onClick={() => setPage("dashboard")} style={S.btnS}>{"\u2190"} Dashboard</button>}
+          </div>
+        </div>
+        <div style={S.content}>
+          {page === "dashboard" && <Dashboard data={data} onNav={setPage} />}
+          {currentAccount && (
+            <AccountView account={currentAccount} transactions={data[currentAccount.id]} onAdd={addTransaction} onDelete={deleteTransaction} user={user} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
