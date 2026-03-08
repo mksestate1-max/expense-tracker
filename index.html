@@ -26,30 +26,21 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
   .fade-in { animation: fadeIn 0.3s ease-out; }
-  .sidebar-overlay {
-    display: none;
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.45);
-    z-index: 40;
-  }
-  .sidebar-overlay.open { display: block; }
-  .sidebar-panel {
-    transition: transform 0.25s ease;
-  }
+  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+  @keyframes ripple { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 100% { box-shadow: 0 0 0 14px rgba(239,68,68,0); } }
+
+  /* Mobile responsive */
   @media (max-width: 768px) {
-    .sidebar-panel {
-      position: fixed !important;
-      top: 0; left: 0; bottom: 0;
-      z-index: 50;
-      width: 260px !important;
-      transform: translateX(-100%);
-    }
-    .sidebar-panel.open { transform: translateX(0); }
-    .hamburger-btn { display: flex !important; }
+    .dashboard-stats { grid-template-columns: 1fr !important; }
+    .dashboard-accounts { grid-template-columns: 1fr !important; }
+    .form-grid { grid-template-columns: 1fr !important; }
+    .balance-bar { flex-direction: column; align-items: stretch !important; }
+    .balance-actions { justify-content: flex-start !important; }
+    .top-bar-inner { flex-direction: column; align-items: flex-start !important; gap: 8px !important; }
+    .content-area { padding: 16px !important; }
+    .table-scroll { font-size: 12px; }
+    .table-scroll th, .table-scroll td { padding: 8px 10px !important; }
   }
-  .hamburger-btn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px; background: none; border: 1px solid #E2E8F0; border-radius: 8px; cursor: pointer; color: #475569; font-size: 18px; }
-  .voice-btn-pulse { animation: pulse 1.5s infinite; }
-  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.5)} 50%{box-shadow:0 0 0 8px rgba(239,68,68,0)} }
 </style>
 </head>
 <body>
@@ -59,7 +50,7 @@
 const { useState, useCallback, useMemo, useEffect, useRef } = React;
 
 /* ════════════════════════════════════════
-   FIREBASE CONFIG — REPLACE WITH YOUR OWN
+   FIREBASE CONFIG
    ════════════════════════════════════════ */
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyB0CDHacwx3nymRCTcJlbIPOZoSDjKyhfs",
@@ -70,7 +61,6 @@ const FIREBASE_CONFIG = {
   appId: "1:554568244159:web:869de803b80634c2e51f0a"
 };
 
-// Initialize Firebase
 const app = firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
 const db = firebase.firestore();
@@ -87,6 +77,8 @@ const ACCOUNTS = [
   { id: "mehdi-fifth-third", label: "Mehdi vs Fifth Third", currency: "USD", p: ["Mehdi", "Fifth Third"], icon: "\u{1F3DB}\uFE0F" },
 ];
 
+const PEOPLE = ["amine", "mehdi", "nelia", "nelia travel", "fifth third"];
+
 const getToday = () => new Date().toISOString().split("T")[0];
 const money = (n, c) => {
   const s = Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -99,10 +91,137 @@ const fmtTime = (ts) => {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 };
 
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const titleCase = (s) => s.split(" ").map(capitalize).join(" ");
+
+/* ───────── VOICE COMMAND PARSER ───────── */
+function parseVoiceCommand(text) {
+  const t = text.toLowerCase().trim();
+
+  // Patterns to match:
+  // "[person] took from [person] [amount] [currency] (to [description])"
+  // "[person] paid [person] [amount] [currency] (for [description])"
+  // "[person] gave [person] [amount] [currency] (for [description])"
+  // "[person] owes [person] [amount] [currency] (for [description])"
+  // "[person] spent [amount] [currency] from [person] (for/to [description])"
+
+  const patterns = [
+    // "mehdi took from amine 5000 dhs to buy personal things"
+    /(\w[\w\s]*?)\s+(?:took|borrowed|received|got)\s+(?:from)\s+(\w[\w\s]*?)\s+(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s*(?:(?:to|for)\s+(.+))?$/i,
+    // "amine paid mehdi 5000 dhs for groceries"
+    /(\w[\w\s]*?)\s+(?:paid|gave|sent|transferred)\s+(?:to\s+)?(\w[\w\s]*?)\s+(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s*(?:(?:to|for)\s+(.+))?$/i,
+    // "amine paid 5000 dhs to mehdi for groceries"
+    /(\w[\w\s]*?)\s+(?:paid|gave|sent|transferred)\s+(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s+(?:to)\s+(\w[\w\s]*?)\s*(?:(?:to|for)\s+(.+))?$/i,
+    // "5000 dhs from amine to mehdi for groceries"
+    /(\d[\d,.]*)\s*(dhs|dirhams?|dollars?|usd)\s+(?:from)\s+(\w[\w\s]*?)\s+(?:to)\s+(\w[\w\s]*?)\s*(?:(?:to|for)\s+(.+))?$/i,
+  ];
+
+  for (let i = 0; i < patterns.length; i++) {
+    const m = t.match(patterns[i]);
+    if (!m) continue;
+
+    let payer, receiver, amount, currStr, desc;
+
+    if (i === 0) {
+      // receiver took from payer
+      receiver = m[1].trim();
+      payer = m[2].trim();
+      amount = m[3].replace(/,/g, "");
+      currStr = m[4];
+      desc = m[5] ? m[5].trim() : "Payment";
+    } else if (i === 1) {
+      // payer paid receiver
+      payer = m[1].trim();
+      receiver = m[2].trim();
+      amount = m[3].replace(/,/g, "");
+      currStr = m[4];
+      desc = m[5] ? m[5].trim() : "Payment";
+    } else if (i === 2) {
+      // payer paid amount to receiver
+      payer = m[1].trim();
+      amount = m[2].replace(/,/g, "");
+      currStr = m[3];
+      receiver = m[4].trim();
+      desc = m[5] ? m[5].trim() : "Payment";
+    } else if (i === 3) {
+      // amount from payer to receiver
+      amount = m[1].replace(/,/g, "");
+      currStr = m[2];
+      payer = m[3].trim();
+      receiver = m[4].trim();
+      desc = m[5] ? m[5].trim() : "Payment";
+    }
+
+    const currency = (currStr.match(/usd|dollar/i)) ? "USD" : "DHS";
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) continue;
+
+    // Normalize names
+    const normPayer = matchPerson(payer);
+    const normReceiver = matchPerson(receiver);
+    if (!normPayer || !normReceiver || normPayer === normReceiver) continue;
+
+    // Find account
+    const account = findAccount(normPayer, normReceiver);
+    if (!account) continue;
+
+    // Check currency match
+    if (account.currency !== currency) continue;
+
+    return {
+      accountId: account.id,
+      accountLabel: account.label,
+      paidBy: normPayer,
+      receiver: normReceiver,
+      amount: amountNum.toFixed(2),
+      currency,
+      desc: titleCase(desc),
+      date: getToday()
+    };
+  }
+
+  return null;
+}
+
+function matchPerson(input) {
+  const t = input.toLowerCase().trim();
+  // Direct matches
+  if (t === "amine" || t === "amin") return "Amine";
+  if (t === "mehdi" || t === "mahdi" || t === "medi") return "Mehdi";
+  if (t === "nelia" || t === "nalia" || t === "naila" || t === "nela") return "Nelia";
+  if (t === "nelia travel" || t === "nalia travel" || t === "naila travel") return "Nelia Travel";
+  if (t === "fifth third" || t === "fifth 3rd" || t === "53" || t === "fifth") return "Fifth Third";
+  // Fuzzy: starts with
+  if (t.startsWith("amin")) return "Amine";
+  if (t.startsWith("meh") || t.startsWith("mah")) return "Mehdi";
+  if (t.startsWith("nel") || t.startsWith("nal") || t.startsWith("nail")) return "Nelia";
+  return null;
+}
+
+function findAccount(p1, p2) {
+  return ACCOUNTS.find(a =>
+    (a.p[0] === p1 && a.p[1] === p2) ||
+    (a.p[0] === p2 && a.p[1] === p1)
+  );
+}
+
 /* ───────── STYLES ───────── */
 const S = {
   root: { display: "flex", height: "100vh", background: "#F1F5F9", color: "#1E293B", fontSize: 14 },
-  sidebar: { width: 260, background: "#1E293B", color: "#CBD5E1", display: "flex", flexDirection: "column", flexShrink: 0 },
+  sidebar: (open) => ({
+    width: 260, background: "#1E293B", color: "#CBD5E1", display: "flex", flexDirection: "column", flexShrink: 0,
+    position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 1000,
+    transform: open ? "translateX(0)" : "translateX(-100%)",
+    transition: "transform 0.3s ease"
+  }),
+  sidebarDesktop: {
+    width: 260, background: "#1E293B", color: "#CBD5E1", display: "flex", flexDirection: "column", flexShrink: 0,
+    position: "relative", transform: "none"
+  },
+  overlay: {
+    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+    background: "rgba(0,0,0,0.5)", zIndex: 999
+  },
   sideHead: { padding: "24px 20px 16px", borderBottom: "1px solid #334155" },
   sideTitle: { fontSize: 18, fontWeight: 800, color: "#F8FAFC", letterSpacing: -0.3 },
   sideSub: { fontSize: 11, color: "#64748B", marginTop: 4 },
@@ -121,7 +240,7 @@ const S = {
     padding: "2px 7px", borderRadius: 10, fontWeight: 700
   }),
   main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
-  topBar: { background: "white", padding: "16px 32px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 },
+  topBar: { background: "white", padding: "16px 24px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 },
   content: { flex: 1, overflowY: "auto", padding: 32 },
   card: { background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" },
   input: { padding: "10px 14px", border: "1px solid #CBD5E1", borderRadius: 8, fontSize: 14, background: "white", width: "100%", boxSizing: "border-box" },
@@ -130,12 +249,251 @@ const S = {
   btnS: { padding: "10px 24px", borderRadius: 8, border: "1px solid #CBD5E1", background: "white", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 },
   btnD: { padding: "4px 10px", borderRadius: 6, border: "none", background: "#FEE2E2", color: "#DC2626", fontSize: 12, cursor: "pointer", fontWeight: 600 },
   btnGoogle: { padding: "12px 28px", borderRadius: 10, border: "1px solid #E2E8F0", background: "white", color: "#1E293B", fontWeight: 600, fontSize: 15, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 10, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" },
+  hamburger: { background: "none", border: "none", color: "#1E293B", fontSize: 24, cursor: "pointer", padding: "4px 8px", display: "flex", alignItems: "center", justifyContent: "center" },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { textAlign: "left", padding: "12px 16px", fontSize: 11, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "2px solid #E2E8F0", background: "#F8FAFC" },
   td: { padding: "14px 16px", borderBottom: "1px solid #F1F5F9", fontSize: 14 },
   thR: { textAlign: "right", padding: "12px 16px", fontSize: 11, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "2px solid #E2E8F0", background: "#F8FAFC" },
   tdR: { padding: "14px 16px", borderBottom: "1px solid #F1F5F9", fontSize: 14, textAlign: "right" },
 };
+
+/* ═══════════════════════════════════════
+   VOICE COMMAND BUTTON (FAB)
+   ═══════════════════════════════════════ */
+function VoiceCommandButton({ onAddTransaction, user }) {
+  const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [error, setError] = useState("");
+  const [showModal, setShowModal] = useState(false);
+  const [added, setAdded] = useState(false);
+  const recognitionRef = useRef(null);
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const supported = !!SpeechRecognition;
+
+  const startListening = () => {
+    if (!supported) {
+      setError("Voice recognition not supported in this browser. Try Chrome.");
+      setShowModal(true);
+      return;
+    }
+    setTranscript("");
+    setParsed(null);
+    setError("");
+    setAdded(false);
+    setShowModal(true);
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.maxAlternatives = 3;
+
+    recognition.onstart = () => setListening(true);
+
+    recognition.onresult = (event) => {
+      let interim = "";
+      let final = "";
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          final += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+      setTranscript(final || interim);
+      if (final) {
+        const result = parseVoiceCommand(final);
+        if (result) {
+          setParsed(result);
+          setError("");
+        } else {
+          setParsed(null);
+          setError("Couldn't understand. Try: \"Mehdi took from Amine 5000 DHS for groceries\"");
+        }
+      }
+    };
+
+    recognition.onerror = (event) => {
+      setListening(false);
+      if (event.error === "no-speech") {
+        setError("No speech detected. Please try again.");
+      } else if (event.error === "not-allowed") {
+        setError("Microphone access denied. Please allow microphone access.");
+      } else {
+        setError("Error: " + event.error);
+      }
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+  };
+
+  const confirmAdd = () => {
+    if (!parsed) return;
+    onAddTransaction(parsed.accountId, {
+      amount: parsed.amount,
+      paidBy: parsed.paidBy,
+      desc: parsed.desc,
+      date: parsed.date,
+      addedBy: (user.displayName || user.email) + " (voice)",
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    setAdded(true);
+    setTimeout(() => {
+      setShowModal(false);
+      setAdded(false);
+      setParsed(null);
+      setTranscript("");
+    }, 1800);
+  };
+
+  const closeModal = () => {
+    stopListening();
+    setShowModal(false);
+    setParsed(null);
+    setTranscript("");
+    setError("");
+    setAdded(false);
+  };
+
+  // FAB button styles
+  const fabStyle = {
+    position: "fixed", bottom: 24, right: 24, zIndex: 900,
+    width: 60, height: 60, borderRadius: "50%",
+    background: "linear-gradient(135deg, #4F46E5, #7C3AED)",
+    color: "white", border: "none", cursor: "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    boxShadow: "0 4px 20px rgba(79,70,229,0.4)",
+    fontSize: 26, transition: "transform 0.2s"
+  };
+
+  const modalOverlay = {
+    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+    background: "rgba(0,0,0,0.6)", zIndex: 2000,
+    display: "flex", alignItems: "center", justifyContent: "center", padding: 16
+  };
+
+  const modalBox = {
+    background: "white", borderRadius: 20, padding: "32px 28px",
+    width: 440, maxWidth: "95vw", boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
+    textAlign: "center", position: "relative"
+  };
+
+  return (
+    <>
+      {/* FAB */}
+      <button onClick={startListening} style={fabStyle} title="Voice command">
+        {"\uD83C\uDF99\uFE0F"}
+      </button>
+
+      {/* Modal */}
+      {showModal && (
+        <div style={modalOverlay} onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}>
+          <div style={modalBox} className="fade-in">
+            {/* Close */}
+            <button onClick={closeModal} style={{ position: "absolute", top: 12, right: 16, background: "none", border: "none", fontSize: 20, color: "#94A3B8", cursor: "pointer" }}>{"\u2715"}</button>
+
+            <div style={{ fontSize: 36, marginBottom: 12 }}>{listening ? "\uD83C\uDF99\uFE0F" : added ? "\u2705" : "\uD83C\uDFA4"}</div>
+            <h2 style={{ fontSize: 20, fontWeight: 800, color: "#1E293B", marginBottom: 4 }}>
+              {added ? "Transaction Added!" : listening ? "Listening..." : parsed ? "Confirm Transaction" : "Voice Command"}
+            </h2>
+            <p style={{ fontSize: 13, color: "#94A3B8", marginBottom: 20 }}>
+              {added ? "Successfully saved" : listening ? "Speak now..." : !transcript && !error ? "Tap the mic to start speaking" : ""}
+            </p>
+
+            {/* Mic animation */}
+            {listening && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{
+                  width: 80, height: 80, borderRadius: "50%", background: "#EF4444", margin: "0 auto",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  animation: "pulse 1.5s ease-in-out infinite", cursor: "pointer",
+                  boxShadow: "0 0 0 0 rgba(239,68,68,0.4)"
+                }} onClick={stopListening}>
+                  <span style={{ fontSize: 32 }}>{"\uD83C\uDF99\uFE0F"}</span>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: "#EF4444", fontWeight: 600 }}>Tap to stop</div>
+              </div>
+            )}
+
+            {/* Transcript display */}
+            {transcript && (
+              <div style={{
+                background: "#F8FAFC", borderRadius: 12, padding: "14px 18px", marginBottom: 16,
+                border: "1px solid #E2E8F0", textAlign: "left"
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>You said:</div>
+                <div style={{ fontSize: 15, color: "#1E293B", fontWeight: 500, fontStyle: "italic" }}>"{transcript}"</div>
+              </div>
+            )}
+
+            {/* Error */}
+            {error && (
+              <div style={{ background: "#FEF2F2", color: "#DC2626", padding: "12px 16px", borderRadius: 10, fontSize: 13, marginBottom: 16, textAlign: "left" }}>
+                {error}
+              </div>
+            )}
+
+            {/* Parsed result preview */}
+            {parsed && !added && (
+              <div style={{
+                background: "#EEF2FF", borderRadius: 12, padding: "16px 18px", marginBottom: 16,
+                border: "1px solid #C7D2FE", textAlign: "left"
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>Parsed Transaction</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Account:</span><br/><strong style={{ fontSize: 14 }}>{parsed.accountLabel}</strong></div>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Amount:</span><br/><strong style={{ fontSize: 14, color: "#4F46E5" }}>{parsed.amount} {parsed.currency}</strong></div>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Paid By:</span><br/><strong style={{ fontSize: 14 }}>{parsed.paidBy}</strong></div>
+                  <div><span style={{ fontSize: 11, color: "#64748B" }}>Description:</span><br/><strong style={{ fontSize: 14 }}>{parsed.desc}</strong></div>
+                </div>
+              </div>
+            )}
+
+            {/* Actions */}
+            {!listening && !added && (
+              <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                {parsed ? (
+                  <>
+                    <button onClick={startListening} style={{ ...S.btnS, padding: "10px 20px" }}>{"\uD83C\uDFA4"} Retry</button>
+                    <button onClick={confirmAdd} style={{ ...S.btnP, padding: "10px 28px", background: "#10B981" }}>{"\u2713"} Confirm & Add</button>
+                  </>
+                ) : (
+                  <button onClick={startListening} style={{ ...S.btnP, padding: "12px 32px", fontSize: 15 }}>{"\uD83C\uDFA4"} {transcript ? "Try Again" : "Start Listening"}</button>
+                )}
+              </div>
+            )}
+
+            {/* Examples */}
+            {!transcript && !listening && !added && (
+              <div style={{ marginTop: 20, textAlign: "left" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Examples:</div>
+                <div style={{ fontSize: 12, color: "#64748B", lineHeight: 1.8 }}>
+                  <div>"Mehdi took from Amine 5000 DHS for groceries"</div>
+                  <div>"Amine paid Nelia 200 DHS for dinner"</div>
+                  <div>"Nelia gave Mehdi 1000 DHS for rent"</div>
+                  <div>"Amine paid Fifth Third 50 USD for subscription"</div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 /* ═══════════════════════════════════════
    LOGIN SCREEN
@@ -182,7 +540,6 @@ function LoginScreen({ onLogin }) {
           <p style={{ color: "#94A3B8", fontSize: 14 }}>Amine {"\u00B7"} Mehdi {"\u00B7"} Nelia</p>
         </div>
 
-        {/* Google Login */}
         <button onClick={handleGoogle} disabled={loading} style={{ ...S.btnGoogle, width: "100%", justifyContent: "center", marginBottom: 20 }}>
           <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
           {loading ? "Signing in..." : "Continue with Google"}
@@ -194,7 +551,6 @@ function LoginScreen({ onLogin }) {
           <div style={{ flex: 1, height: 1, background: "#E2E8F0" }}></div>
         </div>
 
-        {/* Email/Password */}
         <form onSubmit={handleEmail}>
           {mode === "signup" && (
             <div style={{ marginBottom: 12 }}>
@@ -245,7 +601,7 @@ function Dashboard({ data, onNav }) {
 
   return (
     <div className="fade-in">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
+      <div className="dashboard-stats" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
         <div style={{ ...S.card, padding: "20px 24px" }}>
           <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Total Outstanding DHS</div>
           <div style={{ fontSize: 28, fontWeight: 800, color: "#4F46E5", marginTop: 4 }}>{money(totalDHS, "DHS")}</div>
@@ -260,7 +616,7 @@ function Dashboard({ data, onNav }) {
         </div>
       </div>
       <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14, color: "#334155" }}>All Accounts</h2>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
+      <div className="dashboard-accounts" style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
         {summaries.map((a) => {
           const settled = Math.abs(a.bal) < 0.01;
           const owes = a.bal > 0 ? a.p[1] : a.p[0];
@@ -287,41 +643,6 @@ function Dashboard({ data, onNav }) {
             </div>
           );
         })}
-      </div>
-
-      {/* ── Balances ── */}
-      <div>
-        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14, marginTop: 28, color: "#334155" }}>Balances</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
-          {summaries.map((a) => {
-            const bal = a.bal;
-            const settled = Math.abs(bal) < 0.01;
-            const owesP = bal > 0 ? a.p[1] : a.p[0];
-            const owedP = bal > 0 ? a.p[0] : a.p[1];
-            return (
-              <div key={a.id + "-bal"} style={{ ...S.card, padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1E293B" }}>{a.label}</div>
-                  <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>
-                    {settled ? owesP + " & " + owedP + " — all clear" : owesP + " used from " + owedP}
-                  </div>
-                </div>
-                {settled ? (
-                  <span style={{ color: "#10B981", fontWeight: 800, fontSize: 15, whiteSpace: "nowrap" }}>✓ Settled</span>
-                ) : (
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontWeight: 800, fontSize: 18, color: "#DC2626", whiteSpace: "nowrap" }}>
-                      {"−"} {money(Math.abs(bal), a.currency)}
-                    </div>
-                    <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2, whiteSpace: "nowrap" }}>
-                      {owesP} owes {owedP}
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
       </div>
     </div>
   );
@@ -391,7 +712,7 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
   return (
     <div className="fade-in">
       {/* Balance */}
-      <div style={{ ...S.card, padding: "24px 28px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+      <div className="balance-bar" style={{ ...S.card, padding: "24px 28px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Current Balance</div>
           {settled
@@ -402,9 +723,9 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
               </div>
           }
         </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div className="balance-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {account.currency === "DHS" && <button onClick={() => setShowConvert(!showConvert)} style={S.btnS}>{"\uD83D\uDCB1"} Convert USD</button>}
-          <button onClick={() => setShowForm(!showForm)} style={S.btnP}>{showForm ? "\u2715 Cancel" : "+ New Transaction"}</button>
+          <button onClick={() => setShowForm(!showForm)} style={S.btnP}>{showForm ? "\u2715 Cancel" : "+ New"}</button>
         </div>
       </div>
 
@@ -427,7 +748,7 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
               <label style={{ fontSize: 12, fontWeight: 600, color: "#78716C", display: "block", marginBottom: 4 }}>Result (DHS)</label>
               <div style={{ padding: "10px 14px", background: "white", borderRadius: 8, border: "1px solid #CBD5E1", fontSize: 16, fontWeight: 700, color: convResult ? "#4F46E5" : "#CBD5E1", minHeight: 40 }}>{convResult || "\u2014"}</div>
             </div>
-            <button disabled={!convResult} onClick={handleConvertApply} style={{ ...S.btnP, background: convResult ? "#D97706" : "#CBD5E1", whiteSpace: "nowrap", cursor: convResult ? "pointer" : "default" }}>Use in Form {"\u2193"}</button>
+            <button disabled={!convResult} onClick={handleConvertApply} style={{ ...S.btnP, background: convResult ? "#D97706" : "#CBD5E1", whiteSpace: "nowrap", cursor: convResult ? "pointer" : "default" }}>Use {"\u2193"}</button>
           </div>
         </div>
       )}
@@ -437,13 +758,13 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
         <div style={{ ...S.card, padding: "20px 28px", marginBottom: 20 }}>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14, color: "#334155" }}>Add Transaction</div>
           <form onSubmit={handleSubmit}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr 1fr", gap: 12, alignItems: "flex-end" }}>
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr 1fr", gap: 12, alignItems: "flex-end" }}>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Amount ({account.currency})</label>
                 <input type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" required style={S.input} />
               </div>
               <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Used By</label>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Paid By</label>
                 <select value={form.paidBy} onChange={(e) => setForm({ ...form, paidBy: e.target.value })} style={S.select}>
                   {account.p.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -469,25 +790,25 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
         <div style={{ padding: "16px 28px", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#334155" }}>Transactions ({transactions.length})</div>
           <button onClick={() => setSortDir(sortDir === "desc" ? "asc" : "desc")} style={{ ...S.btnS, padding: "6px 14px", fontSize: 12 }}>
-            {sortDir === "desc" ? "\u2193 Newest First" : "\u2191 Oldest First"}
+            {sortDir === "desc" ? "\u2193 Newest" : "\u2191 Oldest"}
           </button>
         </div>
         {transactions.length === 0
           ? <div style={{ padding: "60px 20px", textAlign: "center" }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>{"\uD83D\uDCCB"}</div>
               <div style={{ fontSize: 15, color: "#94A3B8", fontWeight: 500 }}>No transactions yet</div>
-              <div style={{ fontSize: 13, color: "#CBD5E1", marginTop: 4 }}>Click "+ New Transaction" to add one</div>
+              <div style={{ fontSize: 13, color: "#CBD5E1", marginTop: 4 }}>Click "+ New" or use voice command</div>
             </div>
-          : <div style={{ overflowX: "auto" }}>
+          : <div className="table-scroll" style={{ overflowX: "auto" }}>
               <table style={S.table}>
                 <thead>
                   <tr>
                     <th style={S.th}>#</th>
                     <th style={S.th}>Date</th>
                     <th style={S.th}>Description</th>
-                    <th style={S.th}>Used By</th>
+                    <th style={S.th}>Paid By</th>
                     <th style={S.thR}>Amount</th>
-                    <th style={S.thR}>Running Balance</th>
+                    <th style={S.thR}>Running Bal.</th>
                     <th style={S.th}>Added By</th>
                     <th style={{ ...S.th, textAlign: "center", width: 70 }}>Action</th>
                   </tr>
@@ -515,7 +836,7 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
                           <div style={{ fontSize: 11, color: "#94A3B8" }}>{Math.abs(rb) < 0.01 ? "settled" : rb > 0 ? account.p[1] + " owes" : account.p[0] + " owes"}</div>
                         </td>
                         <td style={{ ...S.td, fontSize: 12, color: "#94A3B8" }}>
-                          <div>{t.addedBy || "—"}</div>
+                          <div>{t.addedBy || "\u2014"}</div>
                           <div style={{ fontSize: 11 }}>{fmtTime(t.createdAt)}</div>
                         </td>
                         <td style={{ ...S.td, textAlign: "center" }}>
@@ -540,14 +861,26 @@ function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [page, setPage] = useState("dashboard");
-    const [sidebarOpen, setSidebarOpen] = useState(false);
-    const [voiceState, setVoiceState] = useState("idle"); // idle | listening | processing
-    const [voiceText, setVoiceText] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [data, setData] = useState(() => {
     const d = {};
     ACCOUNTS.forEach((a) => { d[a.id] = []; });
     return d;
   });
+
+  // Track screen size
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Navigate and close sidebar on mobile
+  const navigate = useCallback((p) => {
+    setPage(p);
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
 
   // Listen to auth state
   useEffect(() => {
@@ -583,121 +916,7 @@ function App() {
     db.collection("accounts").doc(accountId).collection("transactions").doc(docId).delete();
   }, []);
 
-  
-    // ---- Voice Command Handler ----
-    const parseVoiceCommand = (text) => {
-      const t = text.toLowerCase().trim();
-      // Find person names (case-insensitive)
-      const people = ["amine", "mehdi", "nelia", "fifth third"];
-      // Patterns: "X took from Y AMOUNT CURRENCY for DESC"
-      //           "X used AMOUNT CURRENCY from Y for DESC"
-      //           "X paid Y AMOUNT CURRENCY for DESC"
-      let usedBy = null, fromPerson = null, amount = null, currency = null, desc = "Payment";
-
-      // Extract amount and currency
-      const amountMatch = t.match(/(d[d,.]*)s*(dhs|mad|usd|dollars?|dirhams?)/i);
-      if (amountMatch) {
-        amount = parseFloat(amountMatch[1].replace(/,/g, ''));
-        currency = amountMatch[2].toLowerCase().startsWith('u') || amountMatch[2].toLowerCase().startsWith('d') ? 'USD' : 'DHS';
-      }
-
-      // Extract people
-      for (const p of people) {
-        const tookPattern = new RegExp(p + '.{0,10}(took|pris|used|utilise|a pris|a utilise)', 'i');
-        const fromPattern = new RegExp('(from|de|pour)\s+' + p, 'i');
-        if (tookPattern.test(t)) usedBy = p;
-        if (fromPattern.test(t) && !usedBy) fromPerson = p;
-      }
-      // Also try "X from Y" pattern
-      if (!usedBy) {
-        for (const p of people) {
-          if (t.indexOf(p) !== -1) {
-            if (!usedBy) usedBy = p;
-            else if (!fromPerson) fromPerson = p;
-          }
-        }
-      }
-
-      // Extract description - text after "for" or "to buy" or "pour"
-      const descMatch = t.match(/(?:for|to buy|pour payer|pour acheter|pour)s+(.{3,40}?)(?:s*$|s*d|s*dhs|s*usd)/i);
-      if (descMatch) desc = descMatch[1].trim();
-
-      // Find matching account
-      if (!usedBy || !fromPerson || !amount) return null;
-
-      // Normalize names to proper case
-      const normalize = (n) => {
-        if (n === 'fifth third') return 'Fifth Third';
-        return n.charAt(0).toUpperCase() + n.slice(1);
-      };
-      usedBy = normalize(usedBy);
-      fromPerson = normalize(fromPerson);
-
-      // Find account that has both people
-      const account = ACCOUNTS.find(a =>
-        (a.p[0] === usedBy && a.p[1] === fromPerson) ||
-        (a.p[1] === usedBy && a.p[0] === fromPerson) ||
-        (a.p[0] === fromPerson && a.p[1] === usedBy)
-      );
-      if (!account) return null;
-
-      // Determine used by: the person who spent/took the money
-      // "X took from Y" -> usedBy = Y (Y's money was taken, so Y is owed)
-      // Actually in our system: usedBy = who the money came FROM (who is owed)
-      // "Mehdi took from Amine" -> Amine's money used -> usedBy = Amine
-      // We stored as: the person whose pocket the money came FROM
-      const finalUsedBy = fromPerson; // the person who provided the money
-
-      return { accountId: account.id, amount, usedBy: finalUsedBy, desc, currency: account.currency };
-    };
-
-    const handleVoiceCommand = () => {
-      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-        alert('Voice recognition not supported in this browser. Try Chrome.');
-        return;
-      }
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const recognition = new SR();
-      recognition.lang = 'en-US';
-      recognition.interimResults = false;
-      recognition.maxAlternatives = 3;
-
-      setVoiceState("listening");
-      setVoiceText("Listening...");
-
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        setVoiceText('Heard: "' + transcript + '"');
-        setVoiceState("processing");
-        const result = parseVoiceCommand(transcript);
-        if (result) {
-          addTransaction(result.accountId, {
-            amount: result.amount.toFixed(2),
-            paidBy: result.usedBy,
-            desc: result.desc || "Voice transaction",
-            date: new Date().toISOString().split('T')[0],
-            addedBy: user.displayName || user.email,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-          });
-          setVoiceText('Done! Added ' + result.amount + ' ' + result.currency + ' to ' + result.accountId.replace(/-/g,' '));
-          setTimeout(() => { setVoiceState("idle"); setVoiceText(""); }, 3000);
-        } else {
-          setVoiceText('Could not parse: "' + transcript + '". Try: "Mehdi took from Amine 5000 DHS for ticket"');
-          setTimeout(() => { setVoiceState("idle"); setVoiceText(""); }, 4000);
-        }
-      };
-      recognition.onerror = (e) => {
-        setVoiceState("idle");
-        setVoiceText("Error: " + e.error);
-        setTimeout(() => setVoiceText(""), 3000);
-      };
-      recognition.onend = () => {
-        if (voiceState === "listening") setVoiceState("idle");
-      };
-      recognition.start();
-    };
-
-const handleLogout = () => { auth.signOut(); setPage("dashboard"); };
+  const handleLogout = () => { auth.signOut(); setPage("dashboard"); };
 
   // Loading
   if (authLoading) {
@@ -715,25 +934,35 @@ const handleLogout = () => { auth.signOut(); setPage("dashboard"); };
   if (!user) return <LoginScreen />;
 
   const currentAccount = ACCOUNTS.find((a) => a.id === page);
+  const showSidebar = isMobile ? sidebarOpen : true;
 
   return (
     <div style={S.root}>
+      {/* SIDEBAR OVERLAY (mobile only) */}
+      {isMobile && sidebarOpen && (
+        <div style={S.overlay} onClick={() => setSidebarOpen(false)}></div>
+      )}
+
       {/* SIDEBAR */}
-      <div className={"sidebar-overlay" + (sidebarOpen ? " open" : "")} onClick={() => setSidebarOpen(false)} />
-      <div style={S.sidebar} className={"sidebar-panel" + (sidebarOpen ? " open" : "")}>
+      <div style={isMobile ? S.sidebar(sidebarOpen) : S.sidebarDesktop}>
         <div style={S.sideHead}>
-          <h1 style={S.sideTitle}>{"\uD83D\uDCB0"} Expense Tracker</h1>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h1 style={S.sideTitle}>{"\uD83D\uDCB0"} Expense Tracker</h1>
+            {isMobile && (
+              <button onClick={() => setSidebarOpen(false)} style={{ background: "none", border: "none", color: "#94A3B8", fontSize: 22, cursor: "pointer" }}>{"\u2715"}</button>
+            )}
+          </div>
           <div style={S.sideSub}>Amine {"\u00B7"} Mehdi {"\u00B7"} Nelia</div>
         </div>
         <div style={S.navList}>
-          <div onClick={() => { setPage("dashboard"); setSidebarOpen(false); }} style={S.navItem(page === "dashboard")}>
+          <div onClick={() => navigate("dashboard")} style={S.navItem(page === "dashboard")}>
             <span style={S.navIcon}>{"\uD83D\uDCCA"}</span> Dashboard
           </div>
           <div style={{ padding: "14px 20px 6px", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#475569" }}>Accounts</div>
           {ACCOUNTS.map((a) => {
             const count = (data[a.id] || []).length;
             return (
-              <div key={a.id} onClick={() => { setPage(a.id); setSidebarOpen(false); }} style={S.navItem(page === a.id)}>
+              <div key={a.id} onClick={() => navigate(a.id)} style={S.navItem(page === a.id)}>
                 <span style={S.navIcon}>{a.icon}</span>
                 <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.label}</span>
                 {count > 0 && <span style={{ fontSize: 11, color: "#64748B", marginRight: 4 }}>{count}</span>}
@@ -759,73 +988,40 @@ const handleLogout = () => { auth.signOut(); setPage("dashboard"); };
 
       {/* MAIN */}
       <div style={S.main}>
-        <div style={S.topBar}>
+        <div className="top-bar-inner" style={S.topBar}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button className="hamburger-btn" onClick={() => setSidebarOpen(true)} title="Menu">&#9776;</button>
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#1E293B" }}>
-              {page === "dashboard" ? "Dashboard" : currentAccount?.label}
+            {isMobile && (
+              <button onClick={() => setSidebarOpen(true)} style={S.hamburger}>
+                {"\u2630"}
+              </button>
+            )}
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#1E293B" }}>
+                {page === "dashboard" ? "Dashboard" : currentAccount?.label}
+              </div>
+              <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>
+                {page === "dashboard"
+                  ? "Overview of all accounts"
+                  : (currentAccount?.currency === "USD" ? "\uD83C\uDDFA\uD83C\uDDF8" : "\uD83C\uDDF2\uD83C\uDDE6") + " " + currentAccount?.currency + " \u00B7 " + currentAccount?.p[0] + " & " + currentAccount?.p[1]}
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>
-              {page === "dashboard"
-                ? "Overview of all accounts and balances"
-                : (currentAccount?.currency === "USD" ? "\uD83C\uDDFA\uD83C\uDDF8" : "\uD83C\uDDF2\uD83C\uDDE6") + " " + currentAccount?.currency + " \u00B7 " + currentAccount?.p[0] + " and " + currentAccount?.p[1]}
-            </div>
-          </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#10B981" }}></div>
-            <span style={{ fontSize: 12, color: "#10B981", fontWeight: 600 }}>Live sync</span>
-            {/* Voice Command Button */}
-            <button
-              onClick={handleVoiceCommand}
-              disabled={voiceState === "listening" || voiceState === "processing"}
-              className={voiceState === "listening" ? "voice-btn-pulse" : ""}
-              title="Voice command"
-              style={{
-                padding: "8px 14px",
-                borderRadius: 8,
-                border: "none",
-                background: voiceState === "listening" ? "#EF4444" : voiceState === "processing" ? "#F59E0B" : "#4F46E5",
-                color: "white",
-                fontWeight: 700,
-                fontSize: 13,
-                cursor: voiceState === "idle" ? "pointer" : "not-allowed",
-                display: "flex",
-                alignItems: "center",
-                gap: 6
-              }}
-            >
-              {voiceState === "listening" ? "🎙️ Listening..." : voiceState === "processing" ? "⏳ Processing..." : "🎙️ Voice"}
-            </button>
-            {voiceText && (
-              <div style={{
-                position: "fixed",
-                bottom: 20,
-                left: "50%",
-                transform: "translateX(-50%)",
-                background: "#1E293B",
-                color: "white",
-                padding: "12px 20px",
-                borderRadius: 10,
-                fontSize: 14,
-                fontWeight: 500,
-                zIndex: 1000,
-                maxWidth: "80vw",
-                textAlign: "center",
-                boxShadow: "0 4px 20px rgba(0,0,0,0.3)"
-              }}>{voiceText}</div>
-            )}
-            {page !== "dashboard" && <button onClick={() => setPage("dashboard")} style={S.btnS}>{"\u2190"} Dashboard</button>}
+            <span style={{ fontSize: 12, color: "#10B981", fontWeight: 600 }}>Live</span>
+            {page !== "dashboard" && <button onClick={() => navigate("dashboard")} style={{ ...S.btnS, padding: "8px 16px" }}>{"\u2190"} Back</button>}
           </div>
         </div>
-        <div style={S.content}>
-          {page === "dashboard" && <Dashboard data={data} onNav={setPage} />}
+        <div className="content-area" style={S.content}>
+          {page === "dashboard" && <Dashboard data={data} onNav={navigate} />}
           {currentAccount && (
             <AccountView account={currentAccount} transactions={data[currentAccount.id]} onAdd={addTransaction} onDelete={deleteTransaction} user={user} />
           )}
         </div>
       </div>
+
+      {/* VOICE COMMAND FAB */}
+      <VoiceCommandButton onAddTransaction={addTransaction} user={user} />
     </div>
   );
 }
