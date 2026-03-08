@@ -264,6 +264,41 @@ function Dashboard({ data, onNav }) {
           );
         })}
       </div>
+
+      {/* ── Balances ── */}
+      <div>
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 14, marginTop: 28, color: "#334155" }}>Balances</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
+          {summaries.map((a) => {
+            const bal = a.bal;
+            const settled = Math.abs(bal) < 0.01;
+            const owesP = bal > 0 ? a.p[1] : a.p[0];
+            const owedP = bal > 0 ? a.p[0] : a.p[1];
+            return (
+              <div key={a.id + "-bal"} style={{ ...S.card, padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1E293B" }}>{a.label}</div>
+                  <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>
+                    {settled ? owesP + " & " + owedP + " — all clear" : owesP + " used from " + owedP}
+                  </div>
+                </div>
+                {settled ? (
+                  <span style={{ color: "#10B981", fontWeight: 800, fontSize: 15, whiteSpace: "nowrap" }}>✓ Settled</span>
+                ) : (
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontWeight: 800, fontSize: 18, color: "#DC2626", whiteSpace: "nowrap" }}>
+                      {"−"} {money(Math.abs(bal), a.currency)}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2, whiteSpace: "nowrap" }}>
+                      {owesP} owes {owedP}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -384,7 +419,7 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
                 <input type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" required style={S.input} />
               </div>
               <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Paid By</label>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "#64748B", display: "block", marginBottom: 4 }}>Used By</label>
                 <select value={form.paidBy} onChange={(e) => setForm({ ...form, paidBy: e.target.value })} style={S.select}>
                   {account.p.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -426,7 +461,7 @@ function AccountView({ account, transactions, onAdd, onDelete, user }) {
                     <th style={S.th}>#</th>
                     <th style={S.th}>Date</th>
                     <th style={S.th}>Description</th>
-                    <th style={S.th}>Paid By</th>
+                    <th style={S.th}>Used By</th>
                     <th style={S.thR}>Amount</th>
                     <th style={S.thR}>Running Balance</th>
                     <th style={S.th}>Added By</th>
